@@ -84,7 +84,7 @@ class Swift_Mime_SimpleMimeEntity implements Swift_Mime_MimeEntity
     Swift_Mime_ContentEncoder $encoder, Swift_KeyCache $cache,
     Swift_Mime_Grammar $grammar)
   {
-    $this->_cacheKey = uniqid();
+    $this->_cacheKey = uniqid(getmypid(). mt_rand(), true);
     $this->_cache = $cache;
     $this->_headers = $headers;
     $this->_grammar = $grammar;

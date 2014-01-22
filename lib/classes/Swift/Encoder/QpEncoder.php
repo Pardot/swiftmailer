@@ -99,6 +99,7 @@ class Swift_Encoder_QpEncoder implements Swift_Encoder
    * @access protected
    */
   protected $_safeMap = array();
+  
 
   /**
    * Creates a new QpEncoder for the given CharacterStream.
@@ -134,14 +135,18 @@ class Swift_Encoder_QpEncoder implements Swift_Encoder
     {
       $maxLineLength = 76;
     }
-
-    $thisLineLength = $maxLineLength - $firstLineOffset;
-
+    //Reduce everything to \n, and then filter below
+    $string = str_replace("\r\n", "\n", $string);
+    $string = str_replace("\r", "\n", $string);
+    while (strpos($string, " \n") !== false) {
+    	$string = str_replace(" \n", "\n", $string);
+    }
+    
+    $lineLen = $firstLineOffset;
     $lines = array();
-    $lNo = 0;
-    $lines[$lNo] = '';
-    $currentLine =& $lines[$lNo++];
-    $size=$lineLen=0;
+    $currentLine = '';
+    $prevSize = $size = 0;
+    $prevChar = $char = '';
 
     $this->_charStream->flushContents();
     $this->_charStream->importString($string);
@@ -171,17 +176,59 @@ class Swift_Encoder_QpEncoder implements Swift_Encoder
         //And filter them
         $bytes = $this->_filter->filter($bytes);
       }
-
-      $enc = $this->_encodeByteSequence($bytes, $size);
-      if ($currentLine && $lineLen+$size >= $thisLineLength)
-      {
-        $lines[$lNo] = '';
-        $currentLine =& $lines[$lNo++];
-        $thisLineLength = $maxLineLength;
-        $lineLen=0;
+      
+      foreach ($bytes as $b) {
+      	//if we've found a \r\n, shove those back in place, set the current line/size, and move on
+      	if ($b == 13) {
+      		//do nothing.  These are incorrectly added by our filter, and get replaced directly below
+      		continue;
+      	} elseif ($b == 10) {
+      	  $lineLen = 0;
+      	  //verify wrapping shenanigans now
+      	  if ($lineLen + $prevSize > $maxLineLength) {
+            $lines []= $currentLine;
+            $currentLine = $prevChar;
+            $lineLen = $prevSize;
+          } else {
+            $lineLen += $prevSize;
+            $currentLine .= $prevChar;
+          }
+      	  $currentLine .= "\r\n";
+      	  $prevSize = 0;
+      	  $prevChar = '';
+      	  continue;
+        }
+        
+        if (isset($this->_safeMap[$b])) {
+          $char = $this->_safeMap[$b];
+          $size = 1;
+        } else {
+          $char = $this->_qpMap[$b];
+          $size = 3;
+        }
+        
+        //verify the size on each loop iteration for speedz
+        //If we made it here, the next char is not a \n, so we will need to wrap
+        if ($lineLen + $prevSize >= $maxLineLength) {
+          $lines []= $currentLine;
+          $currentLine = $prevChar;
+          $lineLen = $prevSize;
+        } else {
+          $lineLen += $prevSize;
+          $currentLine .= $prevChar;
+        }
+        
+        //stash old values at the end of each iteration
+      	$prevChar = $char;
+      	$prevSize = $size;
       }
-      $lineLen+=$size;
-      $currentLine .= $enc;
+    }
+    if ($prevSize && $prevChar) {
+    	$currentLine .= $prevChar;
+    }
+    
+    if ($currentLine) {
+    	$lines []= $currentLine;
     }
 
     return $this->_standardize(implode("=\r\n", $lines));

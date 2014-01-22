@@ -129,10 +129,12 @@ class Swift_StreamFilters_ByteArrayReplacementFilter
     {
       return $buffer;
     }
-    
+
     $newBuffer = array();
-    $buf_size = count($buffer);
-    for ($i = 0; $i < $buf_size; ++$i)
+	//not all arrays are 0-indexed..
+	$offset = key($buffer);
+    $buf_size = count($buffer) + $offset;
+    for ($i = $offset; $i < $buf_size; ++$i)
     {
       $search_pos = $this->_tree;
       $last_found = PHP_INT_MAX;

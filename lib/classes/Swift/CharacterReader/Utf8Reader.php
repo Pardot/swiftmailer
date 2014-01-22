@@ -107,6 +107,7 @@ class Swift_CharacterReader_Utf8Reader
    	  {
    	  	if ($invalid==true)
    	  	{
+          GraphiteClient::increment('email.encode.invalid');
    	  	  /* We mark the chars as invalid and start a new char */
    	  	  $currentMap['p'][$charPos+$foundChars]=$startOffset+$i;
    	      $currentMap['i'][$charPos+$foundChars]=true;

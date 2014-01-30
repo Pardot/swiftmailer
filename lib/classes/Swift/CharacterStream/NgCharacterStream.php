@@ -161,64 +161,47 @@ class Swift_CharacterStream_NgCharacterStream implements Swift_CharacterStream
      *
      * @return string
      */
-    public function read($length)
-    {
-        if ($this->_currentPos>=$this->_charCount) {
-          return false;
-        }
-        $ret=false;
-        $length = ($this->_currentPos+$length > $this->_charCount)
-          ? $this->_charCount - $this->_currentPos
-          : $length;
-          switch ($this->_mapType) {
-            case Swift_CharacterReader::MAP_TYPE_FIXED_LEN:
-                $len = $length*$this->_map;
-                $ret = substr($this->_datas,
-                        $this->_currentPos * $this->_map,
-                        $len);
-                $this->_currentPos += $length;
-                break;
-
-            case Swift_CharacterReader::MAP_TYPE_INVALID:
-                $end = $this->_currentPos + $length;
-                $end = $end > $this->_charCount
-                    ?$this->_charCount
-                    :$end;
-                $ret = '';
-                for (; $this->_currentPos < $length; ++$this->_currentPos) {
-                    if (isset ($this->_map[$this->_currentPos])) {
-                        $ret .= '?';
-                    } else {
-                        $ret .= $this->_datas[$this->_currentPos];
-                    }
-                }
-                break;
-
-            case Swift_CharacterReader::MAP_TYPE_POSITIONS:
-                $end = $this->_currentPos + $length;
-                $end = $end > $this->_charCount
-                    ?$this->_charCount
-                    :$end;
-                $ret = '';
-                $start = 0;
-                if ($this->_currentPos>0) {
-                    $start = $this->_map['p'][$this->_currentPos-1];
-                }
-                $to = $start;
-                for (; $this->_currentPos < $end; ++$this->_currentPos) {
-                    if (isset($this->_map['i'][$this->_currentPos])) {
-                        $ret .= substr($this->_datas, $start, $to - $start).'?';
-                        $start = $this->_map['p'][$this->_currentPos];
-                    } else {
-                        $to = $this->_map['p'][$this->_currentPos];
-                    }
-                }
-                $ret .= substr($this->_datas, $start, $to - $start);
-                break;
-        }
-
-        return $ret;
-    }
+	public function read($length) {
+		//If we're reading with a variable-length (utf8) reader, we really care about bytes,
+		// not characters.  Disregard the internal character $map and just return the bytes that matter
+		if ($this->_mapType == Swift_CharacterReader::MAP_TYPE_POSITIONS) {
+			$length = min($length, $this->_datasSize - $this->_currentPos);
+			if ($length <= 0) {
+				return false;
+			}
+			$str = substr($this->_datas, $this->_currentPos, $length);
+			$this->_currentPos += $length;
+			return $str;
+		} else {
+			$length = min($length, $this->_charCount - $this->_currentPos);
+			if ($length <= 0) {
+				return false;
+			}
+			if ($this->_mapType == Swift_CharacterReader::MAP_TYPE_FIXED_LEN) {
+				//Fixed-length byte encoding?  just multiply our fixed length by our offsets..
+				$ret = substr($this->_datas, $this->_currentPos * $this->_map, $length * $this->_map);
+				$this->_currentPos += $length;
+				return $ret;
+				//What's an invalid character reader type?
+				//I don't know, so I'm not touching this logic with a 10 foot pole, justin case
+			} elseif ($this->_mapType == Swift_CharacterReader::MAP_TYPE_INVALID) {
+				$ret = '';
+				for (; $this->_currentPos < $length; ++$this->_currentPos)
+				{
+					if (isset ($this->_map[$this->_currentPos]))
+					{
+						$ret .= '?';
+					}
+					else
+					{
+						$ret .= $this->_datas[$this->_currentPos];
+					}
+				}
+			} else {
+				return false;
+			}
+		}
+	}
 
     /**
      * @see Swift_CharacterStream::readBytes()
@@ -227,17 +210,23 @@ class Swift_CharacterStream_NgCharacterStream implements Swift_CharacterStream
      *
      * @return integer[]
      */
-    public function readBytes($length)
-    {
-        $read=$this->read($length);
-        if ($read!==false) {
-            $ret = array_map('ord', str_split($read, 1));
-
-            return $ret;
-        }
-
-        return false;
-    }
+	public function readBytes($length) {
+		if ($this->_mapType == Swift_CharacterReader::MAP_TYPE_POSITIONS) {
+			$length = min($length, $this->_datasSize - $this->_currentPos);
+			if ($length <= 0) {
+				return false;
+			}
+			$ret = unpack('@'.$this->_currentPos.'/C'.$length, $this->_datas);
+			$this->_currentPos += $length;
+			return $ret;
+		} else {
+			$read=$this->read($length);
+			if ($read!==false) {
+				return array_map('ord', str_split($read, 1));
+			}
+			return false;
+		}
+	}
 
     /**
      * @see Swift_CharacterStream::setPointer()
@@ -257,21 +246,25 @@ class Swift_CharacterStream_NgCharacterStream implements Swift_CharacterStream
      *
      * @param string $chars
      */
-    public function write($chars)
-    {
-        if (!isset($this->_charReader)) {
-            $this->_charReader = $this->_charReaderFactory->getReaderFor(
-                $this->_charset);
-            $this->_map = array();
-            $this->_mapType = $this->_charReader->getMapType();
-        }
-        $ignored='';
-        $this->_datas .= $chars;
-        $this->_charCount += $this->_charReader->getCharPositions(substr($this->_datas, $this->_datasSize), $this->_datasSize, $this->_map, $ignored);
-        if ($ignored!==false) {
-            $this->_datasSize=strlen($this->_datas)-strlen($ignored);
-        } else {
-            $this->_datasSize=strlen($this->_datas);
-        }
-    }
+	public function write($chars) {
+		//Snag a new character reader, if we don't have one initialized yet
+		if (!isset($this->_charReader))
+		{
+			$this->_charReader = $this->_charReaderFactory->getReaderFor($this->_charset);
+			$this->_map = array();
+			$this->_mapType = $this->_charReader->getMapType();
+		}
+		$ignored='';
+		$this->_datas .= $chars;
+		//If we're doing utf8 encoding, no need to figure out all character encodings, since we adjusted the way
+		// that we handle our byte stream in our qp encoder.
+		if ($this->_mapType !== Swift_CharacterReader::MAP_TYPE_POSITIONS) {
+			$this->_charCount += $this->_charReader->getCharPositions(substr($this->_datas, $this->_datasSize), $this->_datasSize, $this->_map, $ignored);
+		}
+		if ($ignored !== false) {
+			$this->_datasSize=strlen($this->_datas)-strlen($ignored);
+		} else {
+			$this->_datasSize=strlen($this->_datas);
+		}
+	}
 }

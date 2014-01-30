@@ -19,7 +19,10 @@
  */
 class Swift_Encoder_QpEncoder implements Swift_Encoder
 {
-    /**
+	const LF = 10;
+	const CR = 13;
+
+	/**
      * The CharacterStream used for reading characters (as opposed to bytes).
      *
      * @var Swift_CharacterStream
@@ -162,57 +165,153 @@ class Swift_Encoder_QpEncoder implements Swift_Encoder
      *
      * @return string
      */
-    public function encodeString($string, $firstLineOffset = 0, $maxLineLength = 0)
-    {
-        if ($maxLineLength > 76 || $maxLineLength <= 0) {
-            $maxLineLength = 76;
-        }
+	public function encodeString($string, $firstLineOffset = 0,
+								 $maxLineLength = 0, $ignoreMultibyteCharacters = true)
+	{
+		$startMicros = microtime(true);
+		if ($maxLineLength > 76 || $maxLineLength <= 0)
+		{
+			$maxLineLength = 76;
+		}
+		//Reduce everything to \n, and then filter below
+		$string = str_replace("\r\n", "\n", $string);
+		$string = str_replace("\r", "\n", $string);
+		while (strpos($string, " \n") !== false) {
+			$string = str_replace(" \n", "\n", $string);
+		}
 
-        $thisLineLength = $maxLineLength - $firstLineOffset;
+		$lineLen = $firstLineOffset;
+		$lines = array();
+		$currentLine = '';
+		$prevSize = $size = 0;
+		$prevChar = $char = '';
 
-        $lines = array();
-        $lNo = 0;
-        $lines[$lNo] = '';
-        $currentLine =& $lines[$lNo++];
-        $size=$lineLen=0;
+		$this->_charStream->flushContents();
+		$this->_charStream->importString($string);
 
-        $this->_charStream->flushContents();
-        $this->_charStream->importString($string);
+		$multibytePiece = "";
+		$multibyteLength = 0;
+		$multibyteCurrentLength = 0;
 
-        // Fetching more than 4 chars at one is slower, as is fetching fewer bytes
-        // Conveniently 4 chars is the UTF-8 safe number since UTF-8 has up to 6
-        // bytes per char and (6 * 4 * 3 = 72 chars per line) * =NN is 3 bytes
-        while (false !== $bytes = $this->_nextSequence()) {
-            // If we're filtering the input
-            if (isset($this->_filter)) {
-                // If we can't filter because we need more bytes
-                while ($this->_filter->shouldBuffer($bytes)) {
-                    // Then collect bytes into the buffer
-                    if (false === $moreBytes = $this->_nextSequence(1)) {
-                        break;
-                    }
+		//Since we filter our bytes manually to split them across lines below, we can use arbitrary batch sizes here.
+		//Mild testing suggests that a chunk size between 200 and 1,000 is optimal for unpack()
+		while (false !== $bytes = $this->_nextSequence(1000))
+		{
+			$skippedCR = false;
+			foreach ($bytes as $b) {
+				//if we've found a \r\n, shove those back in place, set the current line/size, and move on
+				//Nothing fancy here, MIME standards say you cr/lf your newlines
+				if ($b == self::LF || $skippedCR) {
+					$skippedCR = false;
+					$lineLen = 0;
+					//verify wrapping shenanigans now
+					if ($lineLen + $prevSize > $maxLineLength) {
+						$lines []= $currentLine;
+						$currentLine = $prevChar;
+					} else {
+						$currentLine .= $prevChar;
+					}
+					$currentLine .= "\r\n";
+					$prevSize = 0;
+					$prevChar = '';
+					//If we're on a \n, skip onward.  If we're not, then just the previous char was a CR,
+					// and thus we want to shove our \r\n into place and then continue processing the current byte
+					if ($b == self::LF) {
+						continue;
+					}
+				}
 
-                    foreach ($moreBytes as $b) {
-                        $bytes[] = $b;
-                    }
-                }
-                // And filter them
-                $bytes = $this->_filter->filter($bytes);
-            }
+				if ($b == self::CR) {
+					$skippedCR = true;
+					//do nothing.  These are incorrectly added by our filter, and get replaced directly below
+					continue;
+				}
 
-            $enc = $this->_encodeByteSequence($bytes, $size);
-            if ($currentLine && $lineLen+$size >= $thisLineLength) {
-                $lines[$lNo] = '';
-                $currentLine =& $lines[$lNo++];
-                $thisLineLength = $maxLineLength;
-                $lineLen=0;
-            }
-            $lineLen+=$size;
-            $currentLine .= $enc;
-        }
+				/**
+				 * We can't append our bytes until we're sure that we're appending an entire valid character
+				 *  to the string in one go.  For multiline SMTP fields, each field is supposed to be self-sufficient.
+				 *  See http://tools.ietf.org/html/rfc2047 - "Each 'encoded-word' MUST encode an integral number of octets."
+				 */
+				//If we don't have a multibyte length yet..
+				if (!$multibyteLength) {
+					//If we're in the safe zone, flag our character and size, and move on
+					if (isset($this->_safeMap[$b])) {
+						$char = $this->_safeMap[$b];
+						$size = 1;
+					} else {
+						/**
+						 *  If we're in the danger zone, find out our multibyte length
+						 *  Valid single-bytes are contained in _safeMap
+						 *  Valid double-bytes start with C2->DF
+						 *  Valid triple-bytes start with E0 -> EF
+						 *  Otherwise, assume 4
+						 *  http://en.wikipedia.org/wiki/Unicode
+						 */
+						if ($b <= 126) { //126 = 7E = 1byte max
+							$multibyteLength = 1;
+						} elseif ($b <= 223) { //223 = DF = 2byte max
+							$multibyteLength = 2;
+						} elseif ($b <= 239) {//239 = EF = 3byte max
+							$multibyteLength = 3;
+						} else {
+							$multibyteLength = 4;
+						}
+						$multibyteCurrentLength = 0;
+						$multibytePiece = "";
+					}
+				}
+				if ($multibyteLength) {
+					$multibytePiece .= $this->_qpMap[$b];
+					$multibyteCurrentLength++;
 
-        return $this->_standardize(implode("=\r\n", $lines));
-    }
+					//If we're at the end of our utf8 string..
+					if ($multibyteCurrentLength == $multibyteLength || $ignoreMultibyteCharacters) {
+						//set our size and char accordingly
+						$size = $multibyteCurrentLength * 3;
+						$char = $multibytePiece;
+						//and reset our multibyte length
+						$multibyteLength = 0;
+					} else {
+						//Otherwise, move on to the next byte and see where that gets us
+						continue;
+					}
+				}
+
+
+				//verify the size on each loop iteration for speedz
+				//If we made it here, the next char is not a \n, so we will need to wrap
+				if ($lineLen + $prevSize >= $maxLineLength) {
+					$lines []= $currentLine;
+					$currentLine = $prevChar;
+					$lineLen = $prevSize;
+				} else {
+					$lineLen += $prevSize;
+					$currentLine .= $prevChar;
+				}
+
+				//stash old values at the end of each iteration
+				$prevChar = $char;
+				$prevSize = $size;
+			}
+		}
+		if ($prevSize && $prevChar !== '') {
+			$currentLine .= $prevChar;
+		}
+
+		if ($currentLine !== '') {
+			$lines []= $currentLine;
+		}
+
+		$encodedResult = $this->_standardize(implode("=\r\n", $lines));
+
+		$endMicros = microtime(true);
+
+		if (class_exists('GraphiteClient', false)) {
+			GraphiteClient::timing('email.encode', ($endMicros - $startMicros) * 1000, 0.1);
+		}
+
+		return $encodedResult;
+	}
 
     /**
      * Updates the charset used.

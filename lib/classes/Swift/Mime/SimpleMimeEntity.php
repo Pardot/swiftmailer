@@ -569,7 +569,10 @@ class Swift_Mime_SimpleMimeEntity implements Swift_Mime_MimeEntity
         if (!empty($this->_immediateChildren)) {
             foreach ($this->_immediateChildren as $child) {
                 $is->write("\r\n\r\n--" . $this->getBoundary() . "\r\n");
+				$startTime = microtime(true);
                 $child->toByteStream($is);
+				$timeDelta = (microtime(true) - $startTime) * 1000;
+				\GraphiteClient::timing('email.encode', $timeDelta, 0.01);
             }
             $is->write("\r\n\r\n--" . $this->getBoundary() . "--\r\n");
         }

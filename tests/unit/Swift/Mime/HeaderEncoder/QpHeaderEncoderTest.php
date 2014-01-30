@@ -138,7 +138,7 @@ class Swift_Mime_HeaderEncoder_QpHeaderEncoderTest
             array(ord('!'), ord('*'), ord('+'), ord('-'), ord('/'))
             );
 
-        foreach (range(0x00, 0xFF) as $byte) {
+        foreach (range(0x00, 0x7E) as $byte) {
             $char = pack('C', $byte);
 
             $charStream = $this->_createCharacterStream();
@@ -160,7 +160,9 @@ class Swift_Mime_HeaderEncoder_QpHeaderEncoderTest
                 $this->assertEqual('_', $encodedChar,
                     '%s: Space character should be replaced.'
                     );
-            } else {
+            } elseif (in_array($byte, array(0x0A, 0x0D))) { //Special case
+				continue;
+			} else {
                 $this->assertEqual(sprintf('=%02X', $byte), $encodedChar,
                     '%s: Byte ' . $byte . ' should be encoded.'
                     );

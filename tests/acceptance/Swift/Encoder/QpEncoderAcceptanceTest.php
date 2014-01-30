@@ -41,6 +41,7 @@ class Swift_Encoder_QpEncoderAcceptanceTest
                     }
 
                     $text = file_get_contents($sampleDir . '/' . $sampleFile);
+					$text = str_replace("\n", "\r\n", $text);
                     $encodedText = $encoder->encodeString($text);
 
                     $this->assertEqual(

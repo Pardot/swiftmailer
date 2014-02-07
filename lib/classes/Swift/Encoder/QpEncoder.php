@@ -261,7 +261,7 @@ class Swift_Encoder_QpEncoder implements Swift_Encoder
 					}
 				}
 				if ($multibyteLength) {
-					$multibytePiece .= $this->_qpMap[$b];
+					$multibytePiece .= self::$_qpMap[$b];
 					$multibyteCurrentLength++;
 
 					//If we're at the end of our utf8 string..
